@@ -1,4 +1,4 @@
-# Daybound
+# Daybounda
 
 A keyboard-first planner where every task owns a range of days. You type one line, it figures out the group and the dates, and the task shows up in a grouped list and on a calendar. Tasks never close on their own: when their days run out they roll forward one day at a time, marked in red, until you resolve them.
 
