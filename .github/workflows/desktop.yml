@@ -1,0 +1,58 @@
+name: Desktop app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['desktop-v*']
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    env:
+      DAYBOUND_URL: ${{ vars.DAYBOUND_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the site address is set
+        shell: bash
+        run: |
+          if [ -z "$DAYBOUND_URL" ]; then
+            echo "::error::Add a repository variable named DAYBOUND_URL (Settings > Secrets and variables > Actions > Variables) set to your Vercel address."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - run: npm ci
+        working-directory: desktop
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: desktop-v__VERSION__
+          releaseName: Daybound desktop v__VERSION__
+          releaseBody: Installers for Windows (.msi or .exe) and macOS (.dmg).
+          releaseDraft: true
+          args: ${{ matrix.args }}
