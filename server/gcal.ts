@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { addDays, todayInTz } from '../src/lib/dates.js';
-import { effectiveEnd, groupOf, hashString, INBOX, overdueDays } from '../src/lib/tasks.js';
+import { effectiveEnd, groupOf, hashString, INBOX, isLongTerm, overdueDays } from '../src/lib/tasks.js';
 import { sanitizeTask, type Task } from '../src/lib/types.js';
 import { accessToken } from './google.js';
 import { errorMessage } from './http.js';
@@ -49,8 +49,23 @@ function gError(what: string, r: { status: number; data: any }): Error {
   return new Error(`${what} failed (${r.status}): ${r.data?.error?.message ?? 'unknown error'}`);
 }
 
+/** Google's fixed event palette, matched to the colors the fixed groups use in the app. */
+const GCAL_COLOR: Record<string, string> = {
+  aca: '11', // Tomato, red
+  eca: '5', // Banana, golden
+  msc: '4', // Flamingo, pink
+  prs: '7', // Peacock, teal
+};
+
+function colorFor(group: string): Record<string, string> {
+  if (group === INBOX) return {};
+  return { colorId: GCAL_COLOR[group] ?? String((hashString(group) % 11) + 1) };
+}
+
 function desiredEvent(t: Task, today: string): Record<string, unknown> | null {
-  if (t.deleted || t.resolvedAt) return null;
+  // Long-term tasks have no dates, so they are never mirrored. Returning null also removes
+  // the event of a task that has just been moved into the long-term group.
+  if (t.deleted || t.resolvedAt || isLongTerm(t)) return null;
   const end = effectiveEnd(t, today);
   const over = overdueDays(t, today);
   const group = groupOf(t);
@@ -68,7 +83,7 @@ function desiredEvent(t: Task, today: string): Record<string, unknown> | null {
     status: 'confirmed',
     transparency: 'transparent', // tasks don't make you look busy
     reminders: { useDefault: false },
-    ...(group === INBOX ? {} : { colorId: String((hashString(group) % 11) + 1) }),
+    ...colorFor(group),
     extendedProperties: { private: { dayboundId: t.id } },
   };
 }

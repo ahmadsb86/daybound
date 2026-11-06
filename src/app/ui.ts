@@ -41,6 +41,8 @@ export const ui = {
   quick: false,
   shell: '',
   demo: false,
+  /** a task is being dragged, so the fixed groups show even when empty, as drop targets */
+  dragging: false,
 };
 
 export function activeFilter(): string {

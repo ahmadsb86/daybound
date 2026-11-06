@@ -15,9 +15,13 @@ Everything happens in the input box. Press `?` in the app for the full reference
 | `problem set #school mon to fri` or `mon-fri` | A range. If this week's range already ended, it means next week |
 | `today`, `tom`, `next mon`, `nov 12`, `11/12`, `12th` | Single dates (month first). A lone date means "from today through then" |
 | `in 3d`, `in 2 weeks`, `this week`, `next week`, `weekend` | Relative dates and whole periods |
+| `aca`, `eca`, `msc`, `prs` | Groups you can type without the `#`. These four always head the list, in that order |
+| `read more lt` | Long term: no dates, no calendar, always at the bottom of the list |
 | `\sat` or `"SAT prep"` | Keep a word as text. ALL CAPS words are never read as dates |
 
-A task without dates is refused. The first `#tag` is the group; extra tags just ride along. The line under the input shows exactly what will be created before you press Enter.
+A task without dates is refused unless it is tagged `lt`. The first `#tag` is the group; extra tags just ride along. The line under the input shows exactly what will be created before you press Enter.
+
+The five tags above are recognized as bare words anywhere in the line, so `essay draft aca fri` and `essay draft #aca fri` do the same thing. The usual escapes still apply: `ACA`, `\aca` and `"aca"` stay plain text.
 
 | Command | What it does |
 | --- | --- |
@@ -31,6 +35,8 @@ A task without dates is refused. The first `#tag` is the group; extra tags just 
 | `login`, `logout`, `sync`, `pair` | Syncing between devices |
 
 Keys: `↑` `↓` or `Tab` pick a match, `Enter` runs, `Esc` backs out one step at a time, `Tab` completes a tag, `↑` recalls earlier lines, `[` `]` and `PgUp` `PgDn` move the calendar, `Ctrl+Z` undoes when the input is empty. On a phone you can tap a task to jump straight into resolving it.
+
+With a mouse: the small circle on a task resolves it, and dragging a task onto another group moves it there. While you drag, the four built-in groups appear even when empty so you can drop into one. Dragging onto `lt` drops the task's dates; dragging out of `lt` makes it due today. Dragging needs a mouse or trackpad — it isn't available on touch.
 
 ## Deploying
 
@@ -125,6 +131,7 @@ For the full stack, install the Vercel CLI, run `vercel link` and `vercel env pu
 ## How it works
 
 - **Tasks** have a title, tags, a start and an end date. The end date you planned is never changed by the rollover; "overdue" is computed from it every time it's shown, so the list can say "3d over" and the calendar can draw the planned days normally and the overdue days hatched.
+- **Long-term tasks** (the `lt` group) are untimed. They still store the day they were added so the saved shape never varies, but nothing reads it: no range, no due label, no rollover, no calendar event. They sit in their own section at the bottom of the list, oldest first.
 - **Each device** keeps everything in local storage and works offline. Changes sync to Redis through `/api/sync`, newest edit wins per task, and deletes travel as tombstones so they reach every device.
 - **Google Calendar** is a one-way mirror. Every open task is an all-day event on the Daybound calendar, marked free so it doesn't block your schedule, colored by group, with no notifications. Overdue events stretch to today and get a ⚠ and a "(3d over)" suffix. Resolving or deleting a task removes its event. Edits you make in Google Calendar are overwritten on the task's next change.
 - **Rolling overdue events forward** happens in a full pass once a day: from the Vercel cron at 09:00 UTC (early morning in the US), or from the first sync of the day on any device, whichever comes first. If you delete the Daybound calendar in Google, the next full pass recreates it.

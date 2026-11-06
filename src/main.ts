@@ -1,10 +1,20 @@
-import '@fontsource-variable/recursive/casl.css';
 import './styles.css';
 
 import { fmtRange, fmtRangeLong, todayLocal, type ISODate } from './lib/dates';
 import { fuzzy } from './lib/fuzzy';
 import { parseInput, type DateSpan } from './lib/parse';
-import { compareUrgency, dueLabel, groupOf, overdueDays, spanDays } from './lib/tasks';
+import {
+  AUTO_TAGS,
+  compareUrgency,
+  dueLabel,
+  groupOf,
+  isLongTerm,
+  isOpen,
+  LONG_TERM,
+  overdueDays,
+  regroup,
+  spanDays,
+} from './lib/tasks';
 import type { Task } from './lib/types';
 import {
   colorVars,
@@ -118,7 +128,9 @@ function tagFrequency(): string[] {
     if (t.deleted) continue;
     for (const tag of t.tags) count.set(tag, (count.get(tag) ?? 0) + 1);
   }
-  return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t);
+  const used = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t);
+  // the built-in tags complete even before any task uses them
+  return [...used, ...[...AUTO_TAGS].filter((t) => !count.has(t))];
 }
 
 /* ---------- picker ---------- */
@@ -241,7 +253,9 @@ function previewHtml(): string {
     .join('');
   const title = p.title ? `<span class="pv-title">${esc(p.title)}</span>` : '';
   let when = '';
-  if (p.span) {
+  if (p.untimed) {
+    when = `<span class="pv-when">long term</span><span class="pv-len">no dates</span>`;
+  } else if (p.span) {
     const n = spanDays(p.span.start, p.span.end);
     when = `<span class="pv-when">${esc(fmtRangeLong(p.span.start, p.span.end, today))}</span><span class="pv-len">${n} day${n === 1 ? '' : 's'}</span>`;
   } else if (p.error) {
@@ -427,19 +441,21 @@ async function submitAdd(): Promise<void> {
   if (!raw) return;
   if (await runCommand(raw)) return renderAll();
   const p = parseInput(raw, today);
-  if (p.error || !p.span) {
+  if (p.error || (!p.span && !p.untimed)) {
     showErrors = true;
     shake();
     renderInputArea();
     return;
   }
   const now = Date.now();
+  // An untimed task still stores a day so the saved shape never varies; nothing reads it.
+  const span = p.span ?? { start: today, end: today };
   const task: Task = {
     id: newId(),
     title: p.title,
     tags: p.tags,
-    start: p.span.start,
-    end: p.span.end,
+    start: span.start,
+    end: span.end,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -448,7 +464,11 @@ async function submitAdd(): Promise<void> {
   store.pushHistory(raw);
   clearInput();
   store.commit(`added “${task.title}”`, [task]);
-  flash(`Added “${task.title}”, ${fmtRange(task.start, task.end, today)}. Type u to undo.`);
+  flash(
+    p.untimed
+      ? `Added “${task.title}” to long term, with no dates. Type u to undo.`
+      : `Added “${task.title}”, ${fmtRange(task.start, task.end, today)}. Type u to undo.`,
+  );
   afterAction();
 }
 
@@ -479,6 +499,12 @@ function submitPicker(): void {
       break;
     }
     case 'mv': {
+      if (isLongTerm(t)) {
+        shake();
+        flash(`“${t.title}” is long term, so it has no dates to move. Use ren to drop its #lt tag first.`, 'err');
+        renderInputArea();
+        return;
+      }
       const target = mvTarget();
       if (!target.span) {
         showErrors = true;
@@ -566,6 +592,111 @@ function pickTask(id: string): void {
   renderAll();
   input.focus();
 }
+
+/* ---------- resolve button ---------- */
+
+const RESOLVE_MS = 260;
+/** ids mid-animation, so a second click can't resolve twice */
+const resolving = new Set<string>();
+
+function reducedMotion(): boolean {
+  return matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function resolveTask(id: string, row: HTMLElement | null): void {
+  const t = store.tasks[id];
+  if (!t || !isOpen(t) || resolving.has(id)) return;
+  const commit = () => {
+    resolving.delete(id);
+    const cur = store.tasks[id];
+    if (!cur || !isOpen(cur)) return;
+    store.commit(`resolved “${cur.title}”`, [store.update(cur, { resolvedAt: Date.now() })]);
+    flash(`Resolved “${cur.title}”. Type u to undo.`);
+  };
+  if (!row || reducedMotion()) return commit();
+  resolving.add(id);
+  row.classList.add('resolving');
+  setTimeout(commit, RESOLVE_MS);
+}
+
+/* ---------- dragging a task into another group ---------- */
+
+let dragId: string | null = null;
+
+function clearDropTargets(): void {
+  for (const el of document.querySelectorAll('.group.drop')) el.classList.remove('drop');
+}
+
+/** Drop onto a group section: that group becomes the task's first tag. */
+function moveToGroup(id: string, group: string): void {
+  const t = store.tasks[id];
+  if (!t || !isOpen(t)) return;
+  const patch = regroup(t, group, today);
+  if (!patch) return;
+  const wasUntimed = isLongTerm(t);
+  store.commit(`moved “${t.title}” to ${group}`, [store.update(t, patch)]);
+  flash(
+    group === LONG_TERM
+      ? `“${t.title}” is now long term, with no dates.`
+      : wasUntimed
+        ? `“${t.title}” is now in ${group}, due today. Use mv to change that.`
+        : `Moved “${t.title}” to ${group}. Type u to undo.`,
+  );
+}
+
+listEl.addEventListener('dragstart', (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>('.task[data-id]');
+  if (!row?.dataset.id || !store.tasks[row.dataset.id]) return;
+  const id = (dragId = row.dataset.id);
+  e.dataTransfer?.setData('text/plain', id);
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  ui.dragging = true;
+  // Deferred: redrawing the list inside dragstart would replace the node the browser is
+  // still snapshotting for the drag image, which cancels the drag in some browsers.
+  setTimeout(() => {
+    if (dragId !== id) return;
+    renderList(listEl, today);
+    listEl.querySelector(`.task[data-id="${CSS.escape(id)}"]`)?.classList.add('dragging');
+  }, 0);
+});
+
+function endDrag(): void {
+  dragId = null;
+  clearDropTargets();
+  if (!ui.dragging) return;
+  ui.dragging = false;
+  renderList(listEl, today);
+}
+
+listEl.addEventListener('dragend', endDrag);
+
+listEl.addEventListener('dragover', (e) => {
+  if (!dragId) return;
+  const section = (e.target as HTMLElement).closest<HTMLElement>('.group[data-group]');
+  const over = section?.dataset.group;
+  const t = store.tasks[dragId];
+  if (!over || !t || groupOf(t) === over) return clearDropTargets();
+  e.preventDefault(); // allows the drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  if (!section!.classList.contains('drop')) {
+    clearDropTargets();
+    section!.classList.add('drop');
+  }
+});
+
+listEl.addEventListener('dragleave', (e) => {
+  const section = (e.target as HTMLElement).closest<HTMLElement>('.group[data-group]');
+  if (section && !section.contains(e.relatedTarget as Node | null)) section.classList.remove('drop');
+});
+
+listEl.addEventListener('drop', (e) => {
+  const section = (e.target as HTMLElement).closest<HTMLElement>('.group[data-group]');
+  const id = dragId ?? e.dataTransfer?.getData('text/plain') ?? '';
+  const group = section?.dataset.group;
+  e.preventDefault();
+  endDrag();
+  if (group && id) moveToGroup(id, group);
+});
 
 /* ---------- events ---------- */
 
@@ -691,7 +822,12 @@ document.addEventListener(
 document.addEventListener('click', (e) => {
   const target = e.target as HTMLElement;
   const cal = target.closest<HTMLElement>('[data-cal]');
-  if (cal) {
+  const check = target.closest<HTMLElement>('[data-resolve]');
+  if (check?.dataset.resolve) {
+    // the circle resolves directly; it must not also open resolve mode for the row
+    e.stopPropagation();
+    resolveTask(check.dataset.resolve, check.closest<HTMLElement>('.task'));
+  } else if (cal) {
     moveCalendar(Number(cal.dataset.cal));
   } else if (target.closest('.help-hint')) {
     ui.help = !ui.help;

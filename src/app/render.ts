@@ -13,12 +13,16 @@ import {
 } from '../lib/dates';
 import { fuzzy } from '../lib/fuzzy';
 import {
+  compareGroups,
   compareUrgency,
   dueLabel,
   effectiveEnd,
   groupColor,
+  GROUP_ORDER,
   groupOf,
+  isLongTerm,
   isOpen,
+  LONG_TERM,
   overdueDays,
   type RGB,
 } from '../lib/tasks';
@@ -69,6 +73,11 @@ export function visibleOpenTasks(): Task[] {
   return store.all().filter((t) => isOpen(t) && matchesFilter(t, f));
 }
 
+/** The calendar only shows dated tasks; the long-term group has no days to draw. */
+function calendarTasks(): Task[] {
+  return visibleOpenTasks().filter((t) => !isLongTerm(t));
+}
+
 /* ---------- list ---------- */
 
 function taskRow(t: Task, today: ISODate, hlId: string | null): string {
@@ -77,10 +86,15 @@ function taskRow(t: Task, today: ISODate, hlId: string | null): string {
     .slice(1)
     .map((x) => `<span class="tag">#${esc(x)}</span>`)
     .join('');
-  return `<li class="task k-${due.kind}${t.id === hlId ? ' hl' : ''}" data-id="${esc(t.id)}">
+  // long-term tasks have no dates, so the range and due cells are left out entirely
+  const dates = isLongTerm(t)
+    ? ''
+    : `<span class="t-range">${esc(fmtRange(t.start, t.end, today))}</span>
+       <span class="t-due">${esc(due.text)}</span>`;
+  return `<li class="task k-${due.kind}${t.id === hlId ? ' hl' : ''}" data-id="${esc(t.id)}" draggable="true">
+    <button type="button" class="t-check" tabindex="-1" data-resolve="${esc(t.id)}" aria-label="Resolve ${esc(t.title)}" title="Resolve"></button>
     <span class="t-title">${esc(t.title)}${extra}</span>
-    <span class="t-range">${esc(fmtRange(t.start, t.end, today))}</span>
-    <span class="t-due">${esc(due.text)}</span>
+    ${dates}
   </li>`;
 }
 
@@ -101,16 +115,24 @@ export function renderList(el: HTMLElement, today: ISODate): void {
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g)!.push(t);
   }
-  for (const list of groups.values()) list.sort((a, b) => compareUrgency(a, b, today));
-  const ordered = [...groups.entries()].sort(
-    (a, b) => compareUrgency(a[1][0], b[1][0], today) || a[0].localeCompare(b[0]),
-  );
+  // mid-drag, the built-in groups all appear so an empty one can still be dropped into
+  if (ui.dragging) for (const g of [...GROUP_ORDER, LONG_TERM]) if (!groups.has(g)) groups.set(g, []);
+  // untimed tasks can't be ranked by urgency, so they keep the order they were added in
+  for (const [g, list] of groups)
+    list.sort(g === LONG_TERM ? (a, b) => a.createdAt - b.createdAt : (a, b) => compareUrgency(a, b, today));
+  const ordered = [...groups.entries()].sort((a, b) => {
+    const byGroup = compareGroups(a[0], b[0]);
+    if (byGroup) return byGroup;
+    // only two unrecognized groups reach here, and an empty one only exists mid-drag
+    if (!a[1].length || !b[1].length) return a[1].length ? -1 : b[1].length ? 1 : 0;
+    return compareUrgency(a[1][0], b[1][0], today) || a[0].localeCompare(b[0]);
+  });
   el.innerHTML =
     (f ? `<p class="filter-note">Filtered by “${esc(f)}”</p>` : '') +
     ordered
       .map(
-        ([g, list]) => `<section class="group" style="${colorVars(g)}">
-          <h2 class="group-head"><span class="dot"></span>${esc(g)}<span class="count">${list.length}</span></h2>
+        ([g, list]) => `<section class="group${list.length ? '' : ' empty-group'}" style="${colorVars(g)}" data-group="${esc(g)}">
+          <h2 class="group-head"><span class="dot"></span>${esc(g)}<span class="count">${list.length || ''}</span></h2>
           <ul>${list.map((t) => taskRow(t, today, hl)).join('')}</ul>
         </section>`,
       )
@@ -136,7 +158,7 @@ function renderArchive(el: HTMLElement, today: ISODate): void {
       .map(
         (t) => `<li class="task k-done${t.id === hl ? ' hl' : ''}" data-id="${esc(t.id)}" style="${colorVars(groupOf(t))}">
           <span class="t-title"><span class="dot"></span>${esc(t.title)}</span>
-          <span class="t-range">${esc(fmtRange(t.start, t.end, today))}</span>
+          <span class="t-range">${isLongTerm(t) ? '' : esc(fmtRange(t.start, t.end, today))}</span>
           <span class="t-due">${esc(dueLabel(t, today).text)}</span>
         </li>`,
       )
@@ -217,7 +239,7 @@ function calLabel(first: ISODate, last: ISODate): string {
 export function renderCalendar(el: HTMLElement, today: ISODate): void {
   const first = addDays(startOfWeek(today), ui.calOffset * 7);
   const last = addDays(first, WEEKS * 7 - 1);
-  const tasks = visibleOpenTasks();
+  const tasks = calendarTasks();
   const hl = highlightedTask()?.id ?? null;
 
   let weeks = '';
@@ -320,6 +342,8 @@ export const HELP_HTML = `
   <h2>Adding tasks</h2>
   <dl>
     <dt><kbd>essay #school fri</kbd></dt><dd>Today through Friday. The first #tag is the group.</dd>
+    <dt><kbd>aca</kbd> <kbd>eca</kbd> <kbd>msc</kbd> <kbd>prs</kbd></dt><dd>Groups you can type without the #. They head the list in this order.</dd>
+    <dt><kbd>read more lt</kbd></dt><dd>Long term: no dates, no calendar. Always at the bottom of the list.</dd>
     <dt><kbd>call mom on fri</kbd></dt><dd>Friday only</dd>
     <dt><kbd>mon to fri</kbd> <kbd>mon-fri</kbd></dt><dd>A range. If this week’s already ended, it means next week.</dd>
     <dt><kbd>today</kbd> <kbd>tom</kbd> <kbd>next mon</kbd></dt><dd>Single days</dd>
@@ -338,6 +362,12 @@ export const HELP_HTML = `
     <dt><kbd>done</kbd>, <kbd>reopen</kbd> name</dt><dd>See resolved tasks, bring one back</dd>
     <dt><kbd>u</kbd></dt><dd>Undo the last change</dd>
     <dt><kbd>login</kbd> <kbd>logout</kbd> <kbd>sync</kbd> <kbd>pair</kbd></dt><dd>Sync across devices. <kbd>pair</kbd> gives a code for the desktop app.</dd>
+  </dl>
+  <h2>Mouse</h2>
+  <dl>
+    <dt>The circle on a task</dt><dd>Resolve it, without typing anything</dd>
+    <dt>Drag a task onto a group</dt><dd>Moves it there. Dragging onto <kbd>lt</kbd> drops its dates; dragging out makes it due today.</dd>
+    <dt>Click a task</dt><dd>Opens resolve mode with that task picked</dd>
   </dl>
   <h2>Keys</h2>
   <dl>

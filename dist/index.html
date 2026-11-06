@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#191919" />
+    <meta name="description" content="A keyboard-first planner where every task owns a range of days." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Daybound" />
+    <title>Daybound</title>
+    <script type="module" crossorigin src="/assets/index-BZ_tsfx2.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BmoJEted.css">
+  </head>
+  <body>
+    <div id="app">
+      <header class="top">
+        <div id="field" class="field">
+          <span id="mode" class="mode" hidden></span>
+          <div class="input-wrap">
+            <div id="ghost" class="ghost" aria-hidden="true"></div>
+            <input
+              id="cmd"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              enterkeyhint="done"
+              aria-label="Command"
+            />
+          </div>
+        </div>
+        <div id="assist" class="assist" aria-live="polite"></div>
+        <div id="picker" class="picker" hidden></div>
+      </header>
+      <main class="panes">
+        <section id="list" class="list" aria-label="Tasks by group"></section>
+        <section id="cal" class="cal" aria-label="Calendar"></section>
+        <section id="help" class="help" hidden></section>
+      </main>
+      <footer id="foot" class="foot"></footer>
+    </div>
+  </body>
+</html>

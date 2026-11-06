@@ -12,6 +12,7 @@ import {
   startOfWeek,
   ymd,
 } from './dates.js';
+import { AUTO_TAGS, LONG_TERM } from './tasks.js';
 
 /*
  * Grammar, roughly:
@@ -27,6 +28,10 @@ import {
  * so "mon to fri" typed on a Wednesday is the week in progress, and on Saturday it is next week.
  * If several date phrases appear, the last one counts and the others stay in the name.
  * A word in ALL CAPS, a word starting with a backslash, or anything in "quotes" is never a date.
+ *
+ * Tags are '#foo', plus the AUTO_TAGS (aca, eca, msc, prs, lt) written as a bare word.
+ * The same ALL CAPS / backslash / "quotes" escapes keep those words as plain text.
+ * 'lt' marks the task untimed: no date is read, so date words stay in the name.
  */
 
 export type Atom =
@@ -48,6 +53,8 @@ export interface ParsedInput {
   dateText?: string;
   /** date-like phrases that were ignored because a later one won */
   extraDates: string[];
+  /** the 'lt' tag was used: the task carries no dates and none were read */
+  untimed: boolean;
   error?: string;
 }
 
@@ -391,15 +398,31 @@ function matchDateAt(t: Tok[], i: number, today: ISODate): Seg | null {
   return { from: usePrefix ? i : p, to: q, ...resolveSingle(a.atom, today, prefix === 'on') };
 }
 
+/**
+ * The tag a token carries, if any: '#foo', or one of AUTO_TAGS written as a bare word.
+ * An ALL CAPS or escaped word is never a tag, the same escape hatch dates use.
+ */
+function tagOf(tok: Tok): string | null {
+  if (tok.lit) return null;
+  const tm = tok.raw.match(TAG_RE);
+  if (tm) return tm[1].toLowerCase();
+  return !tok.caps && AUTO_TAGS.has(tok.norm) ? tok.norm : null;
+}
+
 export function parseInput(input: string, today: ISODate): ParsedInput {
   const toks = tokenize(input);
+  // 'lt' makes the whole line untimed, so no date is read at all and date words stay in the name.
+  const untimed = toks.some((tok) => tagOf(tok) === LONG_TERM);
+
   const segs: Seg[] = [];
-  for (let i = 0; i < toks.length; ) {
-    const s = matchDateAt(toks, i, today);
-    if (s) {
-      segs.push(s);
-      i = s.to;
-    } else i++;
+  if (!untimed) {
+    for (let i = 0; i < toks.length; ) {
+      const s = matchDateAt(toks, i, today);
+      if (s) {
+        segs.push(s);
+        i = s.to;
+      } else i++;
+    }
   }
 
   const chosen = segs.length ? segs[segs.length - 1] : null;
@@ -409,13 +432,10 @@ export function parseInput(input: string, today: ISODate): ParsedInput {
   const words: string[] = [];
   toks.forEach((tok, i) => {
     if (inChosen(i)) return;
-    if (!tok.lit) {
-      const tm = tok.raw.match(TAG_RE);
-      if (tm) {
-        const tag = tm[1].toLowerCase();
-        if (!tags.includes(tag)) tags.push(tag);
-        return;
-      }
+    const tag = tagOf(tok);
+    if (tag) {
+      if (!tags.includes(tag)) tags.push(tag);
+      return;
     }
     words.push(tok.raw);
   });
@@ -425,6 +445,7 @@ export function parseInput(input: string, today: ISODate): ParsedInput {
     title: words.join(' '),
     tags,
     extraDates: segs.slice(0, -1).map(segText),
+    untimed,
   };
   if (chosen) {
     result.dateText = segText(chosen);
@@ -432,6 +453,6 @@ export function parseInput(input: string, today: ISODate): ParsedInput {
     else result.span = chosen.span;
   }
   if (!result.error && !result.title) result.error = 'Add a name for the task';
-  if (!result.error && !result.span) result.error = 'Add dates, like fri or mon to fri';
+  if (!result.error && !result.span && !untimed) result.error = 'Add dates, like fri or mon to fri';
   return result;
 }

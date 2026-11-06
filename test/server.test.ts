@@ -176,12 +176,44 @@ describe('google calendar mirror', () => {
     expect(events.size).toBe(0);
   });
 
+  it('gives the fixed groups their matching Google colors', async () => {
+    db.set('db:g:refresh', 'rt1');
+    await doSync([
+      task('a', { tags: ['aca'] }),
+      task('e', { tags: ['eca'] }),
+      task('m', { tags: ['msc'] }),
+      task('p', { tags: ['prs'] }),
+    ]);
+    const byTitle = new Map([...events.values()].map((e) => [e.summary, e.colorId]));
+    expect(byTitle.get('task a')).toBe('11'); // Tomato, red
+    expect(byTitle.get('task e')).toBe('5'); // Banana, golden
+    expect(byTitle.get('task m')).toBe('4'); // Flamingo, pink
+    expect(byTitle.get('task p')).toBe('7'); // Peacock, teal
+  });
+
   it('rolls overdue tasks forward to today and marks them', async () => {
     db.set('db:g:refresh', 'rt1');
     await doSync([task('late', { start: addDays(today, -5), end: addDays(today, -2) })]);
     const [ev] = [...events.values()];
     expect(ev.summary).toBe('⚠ task late (2d over)');
     expect(ev.end).toEqual({ date: addDays(today, 1) });
+  });
+
+  it('never mirrors long-term tasks, and removes the event if one becomes long term', async () => {
+    db.set('db:g:refresh', 'rt1');
+    await doSync([task('lt1', { tags: ['lt'] })]);
+    expect(events.size).toBe(0);
+
+    // a dated task that is later moved into the long-term group loses its event
+    await doSync([task('a')]);
+    expect(events.size).toBe(1);
+    await doSync([task('a', { tags: ['lt'], updatedAt: 2 })]);
+    expect(events.size).toBe(0);
+
+    // a full pass does not resurrect it
+    db.delete('db:gcal:full');
+    await cron(new Request('https://daybound.test/api/cron', { headers: { authorization: 'Bearer cron' } }));
+    expect(events.size).toBe(0);
   });
 
   it('cron does a full pass and recreates a deleted calendar', async () => {

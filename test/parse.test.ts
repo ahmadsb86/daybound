@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { parseInput } from '../src/lib/parse';
 import { fuzzy } from '../src/lib/fuzzy';
+import {
+  compareGroups,
+  dueLabel,
+  effectiveEnd,
+  groupColor,
+  groupOf,
+  isLongTerm,
+  LONG_TERM,
+  overdueDays,
+  PALETTE,
+  regroup,
+} from '../src/lib/tasks';
+import type { Task } from '../src/lib/types';
 
 const WED = '2026-11-04'; // a Wednesday
 const SAT = '2026-11-07';
@@ -94,6 +107,165 @@ describe('names and tags', () => {
   it('needs a name and dates', () => {
     expect(parseInput('#school fri', WED).error).toMatch(/name/);
     expect(parseInput('just a thought', WED).error).toMatch(/dates/);
+  });
+});
+
+describe('auto-recognized tags', () => {
+  it('a bare aca/eca/msc/prs word becomes the group', () => {
+    for (const tag of ['aca', 'eca', 'msc', 'prs']) {
+      const p = parseInput(`essay draft ${tag} fri`, WED);
+      expect(p.tags).toEqual([tag]);
+      expect(p.title).toBe('essay draft');
+      expect(p.span?.end).toBe('2026-11-06');
+    }
+  });
+  it('works anywhere in the line and alongside #tags', () => {
+    expect(parseInput('aca essay fri', WED).tags).toEqual(['aca']);
+    expect(parseInput('essay #school aca fri', WED).tags).toEqual(['school', 'aca']);
+    expect(parseInput('essay aca #hard fri', WED).tags).toEqual(['aca', 'hard']);
+  });
+  it('only as a separate word, and never in caps or escaped', () => {
+    expect(parseInput('academy visit fri', WED).tags).toEqual([]);
+    expect(parseInput('academy visit fri', WED).title).toBe('academy visit');
+    expect(parseInput('read ACA report fri', WED).tags).toEqual([]);
+    expect(parseInput('read \\aca fri', WED).tags).toEqual([]);
+    expect(parseInput('read "aca" fri', WED).tags).toEqual([]);
+  });
+  it('does not duplicate a tag given both ways', () => {
+    expect(parseInput('essay aca #aca fri', WED).tags).toEqual(['aca']);
+  });
+});
+
+describe('long term (lt)', () => {
+  it('needs no dates', () => {
+    const p = parseInput('learn to sail lt', WED);
+    expect(p.untimed).toBe(true);
+    expect(p.tags).toEqual(['lt']);
+    expect(p.title).toBe('learn to sail');
+    expect(p.span).toBeUndefined();
+    expect(p.error).toBeUndefined();
+  });
+  it('reads no date at all, so date words stay in the name', () => {
+    const p = parseInput('call ammi on sun lt', WED);
+    expect(p.untimed).toBe(true);
+    expect(p.span).toBeUndefined();
+    expect(p.title).toBe('call ammi on sun');
+    expect(p.extraDates).toEqual([]);
+  });
+  it('still needs a name', () => {
+    expect(parseInput('lt', WED).error).toMatch(/name/);
+  });
+  it('#lt works too, and caps still escapes', () => {
+    expect(parseInput('read more #lt', WED).untimed).toBe(true);
+    expect(parseInput('study for LT fri', WED).untimed).toBe(false);
+    expect(parseInput('study for LT fri', WED).title).toBe('study for LT');
+  });
+  it('a dated task is not untimed', () => {
+    expect(parseInput('essay aca fri', WED).untimed).toBe(false);
+  });
+});
+
+describe('group order', () => {
+  const sorted = (gs: string[]) => [...gs].sort((a, b) => compareGroups(a, b) || a.localeCompare(b));
+
+  it('puts the fixed groups first in order, then the rest, then lt', () => {
+    expect(sorted(['prs', 'zebra', 'lt', 'eca', 'apple', 'aca', 'msc'])).toEqual([
+      'aca', 'eca', 'msc', 'prs', 'apple', 'zebra', 'lt',
+    ]);
+  });
+  it('lt is last even on its own against an unknown group', () => {
+    expect(sorted(['lt', 'aaaa'])).toEqual(['aaaa', 'lt']);
+  });
+  it('leaves two unknown groups to the caller to rank', () => {
+    expect(compareGroups('school', 'work')).toBe(0);
+  });
+});
+
+describe('group colors', () => {
+  it('the fixed groups own their colors regardless of the hash', () => {
+    expect(groupColor('aca')).toEqual([214, 92, 84]);
+    expect(groupColor('eca')).toEqual([223, 176, 92]);
+    expect(groupColor('msc')).toEqual([224, 132, 176]);
+    expect(groupColor('prs')).toEqual([106, 196, 184]);
+  });
+  it('aca and prs are far apart, which hashing did not guarantee', () => {
+    const [ar, ag, ab] = groupColor('aca');
+    const [pr, pg, pb] = groupColor('prs');
+    expect(Math.abs(ar - pr) + Math.abs(ag - pg) + Math.abs(ab - pb)).toBeGreaterThan(200);
+  });
+  it('other groups still hash into the palette', () => {
+    expect(groupColor('school')).toEqual(groupColor('school'));
+    expect(PALETTE).toContainEqual(groupColor('school'));
+  });
+});
+
+describe('due labels', () => {
+  const at = (end: string): Task => ({
+    id: 'a', title: 'x', tags: [], start: WED, end,
+    createdAt: 0, updatedAt: 0, resolvedAt: null, deleted: false,
+  });
+
+  it('capitalizes Today and Tomorrow', () => {
+    expect(dueLabel(at(WED), WED).text).toBe('Today');
+    expect(dueLabel(at('2026-11-05'), WED).text).toBe('Tomorrow');
+  });
+  it('leaves the other labels alone', () => {
+    expect(dueLabel(at('2026-11-07'), WED).text).toBe('Sat');
+    expect(dueLabel(at('2026-10-30'), WED).text).toBe('5d over');
+  });
+});
+
+describe('long-term tasks are untimed', () => {
+  const task = (tags: string[], end: string): Task => ({
+    id: 'a', title: 'x', tags, start: '2026-11-01', end,
+    createdAt: 0, updatedAt: 0, resolvedAt: null, deleted: false,
+  });
+
+  it('never roll forward or count as overdue', () => {
+    const lt = task(['lt'], '2026-11-01');
+    expect(isLongTerm(lt)).toBe(true);
+    expect(overdueDays(lt, WED)).toBe(0);
+    expect(effectiveEnd(lt, WED)).toBe('2026-11-01');
+    expect(dueLabel(lt, WED)).toEqual({ text: '', kind: 'lt' });
+  });
+  it('an ordinary task with the same dates does roll forward', () => {
+    const normal = task(['aca'], '2026-11-01');
+    expect(overdueDays(normal, WED)).toBe(3);
+    expect(effectiveEnd(normal, WED)).toBe(WED);
+  });
+  it('a resolved long-term task still shows when it was resolved', () => {
+    const done = { ...task(['lt'], '2026-11-01'), resolvedAt: Date.parse('2026-11-04T12:00:00Z') };
+    expect(dueLabel(done, WED).kind).toBe('done');
+  });
+});
+
+describe('regroup (dragging a task into a group)', () => {
+  const task = (tags: string[], patch: Partial<Task> = {}): Task => ({
+    id: 'a', title: 'x', tags, start: '2026-10-01', end: '2026-10-01',
+    createdAt: 0, updatedAt: 0, resolvedAt: null, deleted: false, ...patch,
+  });
+
+  it('makes the new group the first tag and drops the old one', () => {
+    expect(regroup(task(['aca']), 'prs', WED)).toEqual({ tags: ['prs'] });
+  });
+  it('keeps the extra tags that are not groups', () => {
+    expect(regroup(task(['aca', 'hard', 'lab']), 'msc', WED)).toEqual({ tags: ['msc', 'hard', 'lab'] });
+  });
+  it('promotes a tag the task already had rather than duplicating it', () => {
+    expect(regroup(task(['aca', 'prs']), 'prs', WED)).toEqual({ tags: ['prs'] });
+  });
+  it('a long-term task is in the lt group whichever tag position lt sits in', () => {
+    expect(groupOf(task(['school', 'lt']))).toBe(LONG_TERM);
+    expect(regroup(task(['school', 'lt']), 'aca', WED)).toEqual({ tags: ['aca', 'school'], start: WED, end: WED });
+  });
+  it('is a no-op when the group is unchanged', () => {
+    expect(regroup(task(['aca']), 'aca', WED)).toBeNull();
+  });
+  it('dates a task dragged out of long term to today, since it never had real dates', () => {
+    expect(regroup(task(['lt']), 'aca', WED)).toEqual({ tags: ['aca'], start: WED, end: WED });
+  });
+  it('dragging into long term keeps the stored dates, which stop being read', () => {
+    expect(regroup(task(['aca']), 'lt', WED)).toEqual({ tags: ['lt'] });
   });
 });
 
